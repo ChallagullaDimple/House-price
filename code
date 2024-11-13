@@ -1,0 +1,104 @@
+!pip install catboost
+# Imports
+import pandas as pd
+from sklearn.model_selection import train_test_split, RandomizedSearchCV
+from sklearn.ensemble import RandomForestRegressor
+from catboost import CatBoostRegressor
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.metrics import r2_score
+import warnings
+warnings.filterwarnings('ignore')
+
+# Load Dataset
+dataset = pd.read_excel("HousePricePrediction (1).xlsx")
+dataset.drop(['Id'], axis=1, inplace=True)
+
+# Fill missing values in 'SalePrice' with the median
+dataset['SalePrice'] = dataset['SalePrice'].fillna(dataset['SalePrice'].median())
+new_dataset = dataset.dropna()  # Drop rows with remaining missing values
+
+# Encode Categorical Features
+s = (new_dataset.dtypes == 'object')
+object_cols = list(s[s].index)
+OH_encoder = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
+OH_cols = pd.DataFrame(OH_encoder.fit_transform(new_dataset[object_cols]))
+OH_cols.index = new_dataset.index
+OH_cols.columns = OH_encoder.get_feature_names_out()
+df_final = new_dataset.drop(object_cols, axis=1)
+df_final = pd.concat([df_final, OH_cols], axis=1)
+
+# Feature and Target Split
+X = df_final.drop(['SalePrice'], axis=1)
+Y = df_final['SalePrice']
+
+# Train-Test Split
+X_train, X_valid, Y_train, Y_valid = train_test_split(X, Y, train_size=0.8, test_size=0.2, random_state=0)
+
+# Feature Scaling (StandardScaler can help with models like RandomForest)
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_valid_scaled = scaler.transform(X_valid)
+
+# Model Tuning and Selection
+
+# RandomForestRegressor with RandomizedSearchCV for hyperparameter tuning
+param_dist_rf = {
+    'n_estimators': [100, 150, 200],  # Limit the number of trees
+    'max_depth': [None, 10, 20],  # Limit depth to avoid overfitting
+    'min_samples_split': [2, 5],  # Fewer options for quicker grid search
+    'min_samples_leaf': [1, 2]
+}
+
+random_search_rf = RandomizedSearchCV(
+    estimator=RandomForestRegressor(random_state=0),
+    param_distributions=param_dist_rf,
+    n_iter=10,  # Reduce iterations for faster runtime
+    cv=3,  # Reduced cross-validation folds
+    scoring='neg_mean_absolute_percentage_error',
+    n_jobs=-1,
+    random_state=0
+)
+random_search_rf.fit(X_train_scaled, Y_train)
+
+# Use the best estimator from RandomizedSearchCV for Random Forest
+best_rf_model = random_search_rf.best_estimator_
+Y_pred_rf = best_rf_model.predict(X_valid_scaled)
+
+# Alternative Model: CatBoostRegressor with hyperparameter tuning
+param_dist_cb = {
+    'iterations': [1000, 1200],  # Fewer iterations
+    'depth': [6, 8],  # Limiting the depth to avoid overfitting
+    'learning_rate': [0.05, 0.1],
+    'l2_leaf_reg': [3, 5]
+}
+
+random_search_cb = RandomizedSearchCV(
+    estimator=CatBoostRegressor(verbose=0),
+    param_distributions=param_dist_cb,
+    n_iter=5,  # Fewer iterations to speed up the process
+    cv=3,  # Reduced cross-validation folds
+    scoring='neg_mean_absolute_percentage_error',
+    n_jobs=-1,
+    random_state=0
+)
+random_search_cb.fit(X_train_scaled, Y_train)
+
+# Use the best estimator from RandomizedSearchCV for CatBoost
+best_cb_model = random_search_cb.best_estimator_
+Y_pred_cb = best_cb_model.predict(X_valid_scaled)
+
+# Finalize the model with the highest R² score
+rf_r2 = r2_score(Y_valid, Y_pred_rf)
+cb_r2 = r2_score(Y_valid, Y_pred_cb)
+
+final_model = best_cb_model if cb_r2 > rf_r2 else best_rf_model
+
+# Final Prediction (one estimated price from the best model)
+final_predictions = final_model.predict(X_valid_scaled)
+
+# Accuracy (R² score) of the final model
+final_r2 = r2_score(Y_valid, final_predictions)
+
+# Output one estimated price and the R² score accuracy
+print(f"Estimated Price for the first house in the validation set: {final_predictions[0]}")
+print(f"Accuracy (R² score) of the final model: {final_r2}")
